@@ -8,225 +8,180 @@ from tkinter import ttk
 # 1. OPERACIONES MATEMATICAS
 # ============================================================
 
-def es_primo(n):
-    """Verifica si un numero es primo."""
+# Limites practicos para mantener la GUI responsiva.
+MAX_MODULO = 1_000_000_000
+MAX_CARACTERES = 300
+MAX_NODOS = 100
+MAX_PROFUNDIDAD = 25
+MAX_EXPONENTE = 100_000
+MAX_BITS_EXPONENTE = 32
 
+
+def es_primo(n):
+    """Prueba de primalidad por divisores hasta sqrt(n)."""
     if n < 2:
         return False
-
     if n == 2:
         return True
-
     if n % 2 == 0:
         return False
-
     divisor = 3
-
     while divisor * divisor <= n:
         if n % divisor == 0:
             return False
         divisor += 2
-
     return True
 
 
 def inverso_modular(a, p):
-    """Calcula el inverso multiplicativo modulo p."""
-
-    a = a % p
-
+    """Inverso multiplicativo en Zp; cero no tiene inverso."""
+    a %= p
     if a == 0:
-        raise ValueError(
-            "No existe inverso modular para cero."
-        )
-
+        raise ValueError("Division modular indefinida: el divisor equivale a 0 (mod p).")
     return pow(a, -1, p)
 
 
-def evaluar_exponente(nodo, p):
-    """
-    Calcula exponentes enteros sin reducirlos
-    modulo p antes de realizar la potencia.
-    """
+def validar_arbol(nodo):
+    """Rechaza construcciones ajenas a la gramatica y arboles complejos."""
+    permitidos = (ast.Expression, ast.BinOp, ast.UnaryOp, ast.Constant,
+                ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow,
+                ast.UAdd, ast.USub, ast.Load)
+    pila = [(nodo, 0)]
+    cantidad = 0
+    while pila:
+        actual, profundidad = pila.pop()
+        cantidad += 1
+        if cantidad > MAX_NODOS or profundidad > MAX_PROFUNDIDAD:
+            raise ValueError("Expresion demasiado compleja (longitud o anidamiento).")
+        if not isinstance(actual, permitidos):
+            raise ValueError("La expresion contiene nombres u operaciones no permitidas.")
+        if isinstance(actual, ast.Constant) and type(actual.value) is not int:
+            raise ValueError("Solo se permiten numeros enteros.")
+        pila.extend((hijo, profundidad + 1) for hijo in ast.iter_child_nodes(actual))
 
+
+def evaluar_exponente(nodo):
+    """Evalua exponentes enteros acotados, sin reducirlos modulo p."""
     if isinstance(nodo, ast.Constant):
-        if type(nodo.value) is not int:
-            raise ValueError("Solo se permiten enteros.")
-        return nodo.value
-
-    if isinstance(nodo, ast.UnaryOp):
-        valor = evaluar_exponente(nodo.operand, p)
-
+        valor = nodo.value
+    elif isinstance(nodo, ast.UnaryOp):
+        a = evaluar_exponente(nodo.operand)
         if isinstance(nodo.op, ast.USub):
-            return -valor
-
-        if isinstance(nodo.op, ast.UAdd):
-            return valor
-
-    if isinstance(nodo, ast.BinOp):
-        a = evaluar_exponente(nodo.left, p)
-        b = evaluar_exponente(nodo.right, p)
-
+            valor = -a
+        elif isinstance(nodo.op, ast.UAdd):
+            valor = a
+        else:
+            raise ValueError("Signo no permitido en el exponente.")
+    elif isinstance(nodo, ast.BinOp):
+        a = evaluar_exponente(nodo.left)
+        b = evaluar_exponente(nodo.right)
         if isinstance(nodo.op, ast.Add):
-            return a + b
-
-        if isinstance(nodo.op, ast.Sub):
-            return a - b
-
-        if isinstance(nodo.op, ast.Mult):
-            return a * b
-
-        if isinstance(nodo.op, ast.Pow):
+            valor = a + b
+        elif isinstance(nodo.op, ast.Sub):
+            valor = a - b
+        elif isinstance(nodo.op, ast.Mult):
+            valor = a * b
+        elif isinstance(nodo.op, ast.Pow):
             if b < 0:
-                raise ValueError(
-                    "El exponente debe ser entero no negativo."
-                )
-            if b > 10000:
-                raise ValueError(
-                    "Exponente demasiado grande."
-                )
-            return a ** b
+                raise ValueError("No se permiten exponentes fraccionarios en exponentes anidados.")
+            if b > MAX_EXPONENTE or (abs(a) > 1 and b * abs(a).bit_length() > MAX_BITS_EXPONENTE + 32):
+                raise ValueError("Exponente intermedio demasiado grande.")
+            valor = a ** b
+        else:
+            raise ValueError("El exponente debe ser una expresion entera sin division.")
+    else:
+        raise ValueError("Exponente no valido.")
+    if abs(valor) > MAX_EXPONENTE:
+        raise ValueError(f"Exponente demasiado grande (maximo {MAX_EXPONENTE}).")
+    return valor
 
-    raise ValueError(
-        "Exponente no valido."
-    )
 
-
-def evaluar_nodo(nodo, p):
-    """Evalua expresiones mediante AST."""
+def evaluar_nodo(nodo, p, pasos=None):
+    """Evalua el AST de manera segura y registra los pasos de calculo."""
+    def registrar(texto):
+        if pasos is not None:
+            pasos.append(texto)
 
     if isinstance(nodo, ast.Constant):
-
-        if type(nodo.value) is not int:
-            raise ValueError(
-                "Solo se permiten numeros enteros."
-            )
-
-        return nodo.value % p
+        valor = nodo.value % p
+        registrar(f"Reducir {nodo.value} modulo {p} = {valor}")
+        return valor
 
     if isinstance(nodo, ast.UnaryOp):
-
-        valor = evaluar_nodo(nodo.operand, p)
-
+        valor = evaluar_nodo(nodo.operand, p, pasos)
         if isinstance(nodo.op, ast.USub):
-            return (-valor) % p
-
+            resultado = (-valor) % p
+            registrar(f"Negacion: (-{valor}) mod {p} = {resultado}")
+            return resultado
         if isinstance(nodo.op, ast.UAdd):
             return valor
-
-        raise ValueError("Operador no permitido.")
+        raise ValueError("Operador unario no permitido.")
 
     if isinstance(nodo, ast.BinOp):
-
-        izquierda = evaluar_nodo(nodo.left, p)
-
-        # Potencias
+        izquierda = evaluar_nodo(nodo.left, p, pasos)
         if isinstance(nodo.op, ast.Pow):
-
-            exponente = evaluar_exponente(
-                nodo.right, p
-            )
-
+            exponente = evaluar_exponente(nodo.right)
+            if izquierda == 0 and exponente < 0:
+                raise ValueError("Cero no admite exponentes negativos.")
+            resultado = pow(izquierda, exponente, p)
             if exponente < 0:
-                if izquierda == 0:
-                    raise ValueError(
-                        "Cero no admite exponentes negativos."
-                    )
-                return pow(izquierda, exponente, p)
+                inverso = inverso_modular(izquierda, p)
+                registrar(f"Inverso de {izquierda} modulo {p} = {inverso}")
+                registrar(f"Potencia negativa: {izquierda}^{exponente} = {inverso}^{-exponente} mod {p} = {resultado}")
+            else:
+                registrar(f"Potencia: {izquierda}^{exponente} mod {p} = {resultado}")
+            return resultado
 
-            return pow(izquierda, exponente, p)
-
-        derecha = evaluar_nodo(nodo.right, p)
-
-        # Suma
+        derecha = evaluar_nodo(nodo.right, p, pasos)
         if isinstance(nodo.op, ast.Add):
-            return (izquierda + derecha) % p
+            resultado = (izquierda + derecha) % p
+            registrar(f"Suma: ({izquierda} + {derecha}) mod {p} = {resultado}")
+        elif isinstance(nodo.op, ast.Sub):
+            resultado = (izquierda - derecha) % p
+            registrar(f"Resta: ({izquierda} - {derecha}) mod {p} = {resultado}")
+        elif isinstance(nodo.op, ast.Mult):
+            resultado = (izquierda * derecha) % p
+            registrar(f"Multiplicacion: ({izquierda} x {derecha}) mod {p} = {resultado}")
+        elif isinstance(nodo.op, ast.Div):
+            inverso = inverso_modular(derecha, p)
+            registrar(f"Inverso de {derecha} modulo {p} = {inverso}, porque ({derecha} x {inverso}) mod {p} = 1")
+            resultado = (izquierda * inverso) % p
+            registrar(f"Division: ({izquierda} / {derecha}) mod {p} = ({izquierda} x {inverso}) mod {p} = {resultado}")
+        else:
+            raise ValueError("Operacion no permitida.")
+        return resultado
+    raise ValueError("Expresion matematica no valida.")
 
-        # Resta
-        if isinstance(nodo.op, ast.Sub):
-            return (izquierda - derecha) % p
 
-        # Multiplicacion
-        if isinstance(nodo.op, ast.Mult):
-            return (izquierda * derecha) % p
-
-        # Division modular
-        if isinstance(nodo.op, ast.Div):
-
-            inverso = inverso_modular(
-                derecha, p
-            )
-
-            return (izquierda * inverso) % p
-
-        raise ValueError(
-            "Operacion no permitida."
-        )
-
-    if isinstance(nodo, ast.Name):
-        raise ValueError(
-            "No se permiten variables ni nombres. "
-            "Utiliza únicamente números enteros."
-        )
-
-    if isinstance(nodo, ast.Call):
-        raise ValueError(
-            "No se permiten llamadas a funciones."
-        )
-
-    raise ValueError(
-        "La expresión contiene una construcción no permitida."
-    )
+def calcular_con_procedimiento(expresion, p):
+    """Devuelve (resultado, lista de pasos) para mostrar en la GUI."""
+    if type(p) is not int or not 2 <= p <= MAX_MODULO:
+        raise ValueError(f"El modulo debe ser un entero entre 2 y {MAX_MODULO}.")
+    if not es_primo(p):
+        raise ValueError(f"El modulo {p} no es primo.")
+    expresion = expresion.strip()
+    if not expresion:
+        raise ValueError("Debes ingresar una expresion.")
+    if len(expresion) > MAX_CARACTERES:
+        raise ValueError(f"La expresion no debe superar {MAX_CARACTERES} caracteres.")
+    permitidos = set("0123456789+-*/^() \t")
+    for caracter in expresion:
+        if caracter not in permitidos:
+            raise ValueError(f"Caracter no permitido: {caracter!r}.")
+    try:
+        arbol = ast.parse(expresion.replace("^", "**"), mode="eval")
+    except (SyntaxError, ValueError) as error:
+        raise ValueError("Error de sintaxis: revisa los parentesis y operadores.") from error
+    validar_arbol(arbol)
+    pasos = [f"Expresion: {expresion}", f"Trabajamos en Z_{p} (modulo primo {p})."]
+    resultado = evaluar_nodo(arbol.body, p, pasos)
+    pasos.append(f"RESULTADO FINAL: {resultado} (mod {p})")
+    return resultado, pasos
 
 
 def calcular_modular(expresion, p):
-    """Valida y evalúa una expresión en Zp."""
-
-    if type(p) is not int:
-        raise ValueError("El módulo debe ser un número entero.")
-
-    if not 2 <= p <= 1_000_000_000:
-        raise ValueError(
-            "El módulo debe estar entre 2 y 1,000,000,000."
-        )
-
-    if not es_primo(p):
-        raise ValueError(
-            f"El módulo {p} no es un número primo."
-        )
-
-    expresion = expresion.strip()
-
-    if not expresion:
-        raise ValueError(
-            "Debes ingresar una expresión matemática."
-        )
-
-    if len(expresion) > 300:
-        raise ValueError(
-            "La expresión es demasiado larga "
-            "(máximo 300 caracteres)."
-        )
-
-    permitidos = set("0123456789+-*/^() \t")
-
-    for caracter in expresion:
-        if caracter not in permitidos:
-            raise ValueError(
-                f"Carácter no permitido: {caracter!r}"
-            )
-
-    expresion = expresion.replace("^", "**")
-
-    try:
-        arbol = ast.parse(expresion, mode="eval")
-    except (SyntaxError, ValueError):
-        raise ValueError(
-            "La expresión tiene un error de sintaxis. "
-            "Revisa los operadores y paréntesis."
-        ) from None
-
-    return evaluar_nodo(arbol.body, p)
+    """Compatibilidad con la funcion original."""
+    return calcular_con_procedimiento(expresion, p)[0]
 
 
 # ============================================================
@@ -276,8 +231,8 @@ class CalculadoraModular:
             "Calculadora de Aritmetica Modular"
         )
 
-        self.ventana.geometry("850x590")
-        self.ventana.minsize(680, 650)
+        self.ventana.geometry("900x850")
+        self.ventana.minsize(700, 680)
 
         # Colores
         self.fondo = "#0F172A"
@@ -647,7 +602,45 @@ class CalculadoraModular:
         ).pack(fill="x")
 
 
+        # PANEL DE PROCEDIMIENTO (se crea antes de los callbacks)
+        panel_pasos = tk.Frame(
+            principal, bg=self.panel, padx=20, pady=15
+        )
+        panel_pasos.pack(fill="both", expand=True, pady=(0, 10))
+
+        tk.Label(
+            panel_pasos, text="PROCEDIMIENTO MATEMATICO",
+            bg=self.panel, fg=self.secundario,
+            font=("Segoe UI", 10, "bold")
+        ).pack(anchor="w", pady=(0, 10))
+
+        contenedor_pasos = tk.Frame(panel_pasos, bg=self.panel)
+        contenedor_pasos.pack(fill="both", expand=True)
+
+        scroll_pasos = tk.Scrollbar(contenedor_pasos)
+        scroll_pasos.pack(side="right", fill="y")
+
+        self.campo_pasos = tk.Text(
+            contenedor_pasos, bg=self.entrada, fg=self.texto,
+            font=("Consolas", 11), relief="flat", bd=0,
+            padx=12, pady=12, wrap="word", height=9,
+            state="disabled", yscrollcommand=scroll_pasos.set
+        )
+        self.campo_pasos.pack(side="left", fill="both", expand=True)
+        scroll_pasos.configure(command=self.campo_pasos.yview)
+
         self.campo_expresion.focus_set()
+
+    def mostrar_pasos(self, pasos):
+        """Actualiza el panel desplazable de solo lectura."""
+        self.campo_pasos.configure(state="normal")
+        self.campo_pasos.delete("1.0", "end")
+        if pasos:
+            self.campo_pasos.insert("end", "\n\n".join(
+                f"{indice}. {paso}" for indice, paso in enumerate(pasos, 1)
+            ))
+        self.campo_pasos.configure(state="disabled")
+        self.campo_pasos.yview_moveto(0)
 
     # --------------------------------------------------------
     # LIMPIAR
@@ -657,6 +650,7 @@ class CalculadoraModular:
 
         self.expresion.set("")
         self.resultado.set("--")
+        self.mostrar_pasos([])
 
         self.estado.set(
             "Ingresa una expresion para comenzar."
@@ -688,6 +682,7 @@ class CalculadoraModular:
             self.modulo.set(str(p))
 
             self.resultado.set("--")
+            self.mostrar_pasos([])
 
             self.estado.set(
                 "Ejemplo cargado. Presiona CALCULAR."
@@ -724,9 +719,10 @@ class CalculadoraModular:
 
             expresion = self.expresion.get()
 
-            respuesta = calcular_modular(
+            respuesta, pasos = calcular_con_procedimiento(
                 expresion, p
             )
+            self.mostrar_pasos(pasos)
 
             self.resultado.set(
                 f"{respuesta} (mod {p})"
@@ -748,6 +744,7 @@ class CalculadoraModular:
         ) as error:
 
             self.resultado.set("ERROR")
+            self.mostrar_pasos([])
 
             self.estado.set(str(error))
 
