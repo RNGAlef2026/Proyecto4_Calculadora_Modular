@@ -163,38 +163,68 @@ def evaluar_nodo(nodo, p):
             "Operacion no permitida."
         )
 
+    if isinstance(nodo, ast.Name):
+        raise ValueError(
+            "No se permiten variables ni nombres. "
+            "Utiliza únicamente números enteros."
+        )
+
+    if isinstance(nodo, ast.Call):
+        raise ValueError(
+            "No se permiten llamadas a funciones."
+        )
+
     raise ValueError(
-        "Expresion matematica no valida."
+        "La expresión contiene una construcción no permitida."
     )
 
 
 def calcular_modular(expresion, p):
-    """Valida y resuelve una expresion modular."""
+    """Valida y evalúa una expresión en Zp."""
+
+    if type(p) is not int:
+        raise ValueError("El módulo debe ser un número entero.")
+
+    if not 2 <= p <= 1_000_000_000:
+        raise ValueError(
+            "El módulo debe estar entre 2 y 1,000,000,000."
+        )
 
     if not es_primo(p):
         raise ValueError(
-            "El modulo p debe ser un numero primo."
+            f"El módulo {p} no es un número primo."
         )
 
     expresion = expresion.strip()
 
     if not expresion:
         raise ValueError(
-            "Debes ingresar una expresion."
+            "Debes ingresar una expresión matemática."
         )
+
+    if len(expresion) > 300:
+        raise ValueError(
+            "La expresión es demasiado larga "
+            "(máximo 300 caracteres)."
+        )
+
+    permitidos = set("0123456789+-*/^() \t")
+
+    for caracter in expresion:
+        if caracter not in permitidos:
+            raise ValueError(
+                f"Carácter no permitido: {caracter!r}"
+            )
 
     expresion = expresion.replace("^", "**")
 
     try:
-        arbol = ast.parse(
-            expresion,
-            mode="eval"
-        )
-
-    except SyntaxError:
+        arbol = ast.parse(expresion, mode="eval")
+    except (SyntaxError, ValueError):
         raise ValueError(
-            "La expresion tiene un error de sintaxis."
-        )
+            "La expresión tiene un error de sintaxis. "
+            "Revisa los operadores y paréntesis."
+        ) from None
 
     return evaluar_nodo(arbol.body, p)
 
