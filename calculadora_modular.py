@@ -44,8 +44,8 @@ def inverso_modular(a, p):
 def validar_arbol(nodo):
     """Rechaza construcciones ajenas a la gramatica y arboles complejos."""
     permitidos = (ast.Expression, ast.BinOp, ast.UnaryOp, ast.Constant,
-                ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow,
-                ast.UAdd, ast.USub, ast.Load)
+                  ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow,
+                  ast.UAdd, ast.USub, ast.Load)
     pila = [(nodo, 0)]
     cantidad = 0
     while pila:
@@ -333,17 +333,61 @@ class CalculadoraModular:
 
     def crear_interfaz(self):
 
+        # Contenido desplazable: los paneles nunca quedan inaccesibles
+        # en pantallas pequenas o con escalado de fuentes.
+        contenedor = tk.Frame(self.ventana, bg=self.fondo)
+        contenedor.pack(fill="both", expand=True)
+
+        self.canvas_principal = tk.Canvas(
+            contenedor, bg=self.fondo, highlightthickness=0, bd=0
+        )
+        barra_principal = ttk.Scrollbar(
+            contenedor, orient="vertical",
+            command=self.canvas_principal.yview
+        )
+        self.canvas_principal.configure(yscrollcommand=barra_principal.set)
+        barra_principal.pack(side="right", fill="y")
+        self.canvas_principal.pack(side="left", fill="both", expand=True)
+
         principal = tk.Frame(
-            self.ventana,
-            bg=self.fondo,
-            padx=28,
-            pady=20
+            self.canvas_principal, bg=self.fondo, padx=28, pady=20
+        )
+        self.contenido_principal = principal
+        self.id_contenido = self.canvas_principal.create_window(
+            (0, 0), window=principal, anchor="nw"
         )
 
-        principal.pack(
-            fill="both",
-            expand=True
-        )
+        def actualizar_region(evento=None):
+            self.canvas_principal.configure(
+                scrollregion=self.canvas_principal.bbox("all")
+            )
+
+        def ajustar_ancho(evento):
+            self.canvas_principal.itemconfigure(
+                self.id_contenido, width=evento.width
+            )
+
+        principal.bind("<Configure>", actualizar_region)
+        self.canvas_principal.bind("<Configure>", ajustar_ancho)
+
+        # Desplazamiento con rueda en el area principal, sin interferir
+        # con el desplazamiento propio del campo de procedimiento.
+        def rueda(evento):
+            widget = self.ventana.winfo_containing(evento.x_root, evento.y_root)
+            if widget is self.campo_pasos:
+                return
+            if evento.num == 4:
+                unidades = -3
+            elif evento.num == 5:
+                unidades = 3
+            else:
+                unidades = -int(evento.delta / 120) * 3
+            if unidades:
+                self.canvas_principal.yview_scroll(unidades, "units")
+
+        self.canvas_principal.bind("<MouseWheel>", rueda)
+        self.canvas_principal.bind("<Button-4>", rueda)
+        self.canvas_principal.bind("<Button-5>", rueda)
 
         # ENCABEZADO
 
@@ -510,6 +554,35 @@ class CalculadoraModular:
 
         self.etiqueta_estado.pack(fill="x")
 
+        # PANEL DE PROCEDIMIENTO (se crea antes de los callbacks)
+        panel_pasos = tk.Frame(
+            principal, bg=self.panel, padx=20, pady=15
+        )
+        panel_pasos.pack(fill="both", expand=True, pady=(0, 10))
+
+        tk.Label(
+            panel_pasos, text="PROCEDIMIENTO MATEMATICO",
+            bg=self.panel, fg=self.secundario,
+            font=("Segoe UI", 10, "bold")
+        ).pack(anchor="w", pady=(0, 10))
+
+        contenedor_pasos = tk.Frame(panel_pasos, bg=self.panel)
+        contenedor_pasos.pack(fill="both", expand=True)
+
+        scroll_pasos = tk.Scrollbar(contenedor_pasos)
+        scroll_pasos.pack(side="right", fill="y")
+
+        self.campo_pasos = tk.Text(
+            contenedor_pasos, bg=self.entrada, fg=self.texto,
+            font=("Consolas", 11), relief="flat", bd=0,
+            padx=12, pady=12, wrap="word", height=9,
+            state="disabled", yscrollcommand=scroll_pasos.set
+        )
+        self.campo_pasos.pack(side="left", fill="both", expand=True)
+        scroll_pasos.configure(command=self.campo_pasos.yview)
+        self.panel_pasos = panel_pasos
+
+
         # ----------------------------------------------------
         # PANEL DE EJEMPLOS
         # ----------------------------------------------------
@@ -602,33 +675,6 @@ class CalculadoraModular:
         ).pack(fill="x")
 
 
-        # PANEL DE PROCEDIMIENTO (se crea antes de los callbacks)
-        panel_pasos = tk.Frame(
-            principal, bg=self.panel, padx=20, pady=15
-        )
-        panel_pasos.pack(fill="both", expand=True, pady=(0, 10))
-
-        tk.Label(
-            panel_pasos, text="PROCEDIMIENTO MATEMATICO",
-            bg=self.panel, fg=self.secundario,
-            font=("Segoe UI", 10, "bold")
-        ).pack(anchor="w", pady=(0, 10))
-
-        contenedor_pasos = tk.Frame(panel_pasos, bg=self.panel)
-        contenedor_pasos.pack(fill="both", expand=True)
-
-        scroll_pasos = tk.Scrollbar(contenedor_pasos)
-        scroll_pasos.pack(side="right", fill="y")
-
-        self.campo_pasos = tk.Text(
-            contenedor_pasos, bg=self.entrada, fg=self.texto,
-            font=("Consolas", 11), relief="flat", bd=0,
-            padx=12, pady=12, wrap="word", height=9,
-            state="disabled", yscrollcommand=scroll_pasos.set
-        )
-        self.campo_pasos.pack(side="left", fill="both", expand=True)
-        scroll_pasos.configure(command=self.campo_pasos.yview)
-
         self.campo_expresion.focus_set()
 
     def mostrar_pasos(self, pasos):
@@ -641,6 +687,25 @@ class CalculadoraModular:
             ))
         self.campo_pasos.configure(state="disabled")
         self.campo_pasos.yview_moveto(0)
+        if pasos:
+            self.ventana.after_idle(self.enfocar_procedimiento)
+
+    def enfocar_procedimiento(self):
+        """Asegura que el panel de pasos sea accesible tras calcular."""
+        self.ventana.update_idletasks()
+        alto_total = self.contenido_principal.winfo_reqheight()
+        alto_visible = self.canvas_principal.winfo_height()
+        if alto_total <= alto_visible:
+            return
+        # Desplaza solo lo necesario para mostrar el borde inferior del panel.
+        inferior = self.panel_pasos.winfo_y() + self.panel_pasos.winfo_height()
+        superior = self.panel_pasos.winfo_y()
+        desplazamiento = self.canvas_principal.canvasy(0)
+        if inferior > desplazamiento + alto_visible:
+            destino = (inferior - alto_visible + 12) / alto_total
+            self.canvas_principal.yview_moveto(max(0, min(1, destino)))
+        elif superior < desplazamiento:
+            self.canvas_principal.yview_moveto(max(0, superior / alto_total))
 
     # --------------------------------------------------------
     # LIMPIAR
